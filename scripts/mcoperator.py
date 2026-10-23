@@ -218,6 +218,17 @@ def cmd_stores(client, args):
     print("  营业：%s-%s" % (store.get("businessStartTime"), store.get("businessEndTime")))
 
 
+def _disp_width(s: str) -> int:
+    """字符串显示宽度（CJK 记 2）。"""
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(ch) in "FW" else 1 for ch in s)
+
+
+def _pad(s: str, width: int) -> str:
+    """按显示宽度左对齐补空格。"""
+    return s + " " * max(0, width - _disp_width(s))
+
+
 def cmd_menu(client, args):
     if not args.store:
         _err("menu 需要 --store 指定门店编码。")
@@ -239,7 +250,7 @@ def cmd_menu(client, args):
         rows.append((name, code, price, orig, tag))
     rows.sort(key=lambda r: str(r[0]))
     for name, code, price, orig, tag in rows:
-        line = "  %-28s %-10s %s" % (name, code, price)
+        line = "  %s %s %s" % (_pad(name, 30), _pad(code, 11), price)
         if orig and orig != price:
             line += "（原价 %s）" % orig
         if tag:
