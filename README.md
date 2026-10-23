@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
 [![MCP](https://img.shields.io/badge/MCP-McDonald's%20China-red.svg)](https://open.mcd.cn/mcp)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](#)
-[![Tests](https://img.shields.io/badge/tests-17%20passed-brightgreen.svg)](#测试)
+[![Tests](https://img.shields.io/badge/tests-43%20passed-brightgreen.svg)](#测试)
 
 **1024 程序员节这天，麦当劳发行了一张程序员专属券。** 我们写了麦算子，让每一张券都不被浪费。
 
@@ -28,6 +28,20 @@
 2. **官方真值，不做估算**：每一种券组合都真实调用麦当劳 `calculate-price`，实付多少是算出来的，不是猜的；
 3. **懂「券商品」**：像 `1024"码"力翻倍` 这种券，兑换的「龙焰鸡腿堡两件套」根本不在常规菜单里——不带券，接口连价都报不出来。麦算子能识别这类专属 SKU，自动带券，并告诉你加购是否划算；
 4. **省钱战报**：每次精算省下的钱记入本地账本，累计解锁「省钱学徒 → 券界传说」七段位。
+
+### 还不止于点餐
+
+| 能力 | 命令 | 说明 |
+|---|---|---|
+| 热量预算 | `plan --kcal 800` | 汇总购物车热量与三大营养素，超预算主动提醒 |
+| 多渠道比价 | `compare --items "..."` | 到店自取 / 得来速 / 麦乐送分别精算，哪个便宜一目了然 |
+| 临期券提醒 | `coupons` | 解析卡包券有效期，「今日到期」「3 天后到期」置顶预警 |
+| 一键领券 | `claim --claim` | 自动领取麦麦省全部可领券 |
+| 营养查询 | `nutrition --query 巨无霸` | 160 个餐品的官方营养数据 |
+| 积分账户 | `account` | 麦享会积分余额、过期预警、抽奖活动与奖品池 |
+| 订单管理 | `orders --order-id X` | 查订单详情；`--cancel` 取消（需二次确认） |
+| 活动日历 | `campaign` | 当月营销活动（往期/进行中/未来） |
+| 离线可用 | 任何命令 `--offline` | MCP 抖动时自动回退本地缓存；`--json` 输出机器可读结果 |
 
 ## 真实演示（2026-10-23，济南 · 麦当劳章丘汇泉路餐厅）
 
@@ -65,6 +79,18 @@ $ python scripts/mcoperator.py plan --city 济南市 --keyword 章丘 --items "�
 
 > \* 购物车含「券商品」——只能随对应优惠券购买的专属 SKU，不领券时麦当劳接口无法单独定价。
 
+**场景三：同一单，三个渠道比价**
+
+```console
+$ python scripts/mcoperator.py compare --city 济南市 --keyword 章丘 --items "麦辣鸡腿汉堡,薯条,可乐"
+
+· 到店自取：麦当劳章丘汇泉路餐厅，最优实付 ¥35.90
+· 得来速（车道取餐）：济南章丘双山得来速餐厅，最优实付 ¥35.40
+· 麦乐送（外卖配送）：不可用（没有可用配送地址）
+
+**结论：得来速（车道取餐） 最便宜，实付 ¥35.40。**
+```
+
 完整输出见 [`examples/`](examples/)。所有数字来自真实 MCP 调用，你可以自己复现。
 
 ## 快速开始
@@ -95,12 +121,22 @@ python scripts/mcoperator.py plan --city 济南市 --keyword 章丘 --items "麦
 | 命令 | 作用 |
 |---|---|
 | `stores --city X --keyword Y` | 查附近门店（自动选最近） |
-| `menu --store <code>` | 看门店完整菜单与价格 |
-| `coupons [--claim]` | 盘点券包；`--claim` 一键领取麦麦省券 |
-| `plan --items "A,B"` | **精算最优券组合，输出省钱报告** |
+| `menu --city X --keyword Y` | 看门店完整菜单与价格（也可 `--store <code>`） |
+| `coupons [--claim]` | 盘点卡包：临期提醒 + 可领券提示；`--claim` 先领券 |
+| `claim [--claim]` | 麦麦省领券中心 |
+| `plan --items "A,B" [--kcal 800]` | **精算最优券组合，输出省钱报告** |
+| `compare --items "A,B"` | 多渠道比价：自取/得来速/麦乐送 |
 | `order --items "A,B" --confirm` | 按最优方案真实下单（不加 `--confirm` 只预览） |
+| `orders --order-id X [--cancel]` | 查订单 / 取消订单 |
+| `nutrition [--query A,B]` | 营养成分查询 |
+| `account` | 麦享会积分与抽奖 |
+| `campaign [--date ...]` | 营销活动日历 |
 | `report` | 查看省钱战报与当前段位 |
 | `tools` | 列出麦当劳 MCP 当前开放的全部工具 |
+| `cache --clear` | 清空本地缓存 |
+
+全局参数放在子命令前后都可以：`--json`（机器可读输出）、
+`--verbose`（调试）、`--offline`（只用缓存）、`--token`（临时 Token）。
 
 外送场景加 `--delivery`（自动取第一个配送地址，或用 `--address-id` 指定）；
 得来速加 `--be-type 5`。
@@ -156,13 +192,17 @@ calculate-price 基准试算（不带券）
 mcoperator/
 ├── SKILL.md                  # WorkBuddy Skill 定义（触发词、执行准则）
 ├── scripts/
-│   ├── mcoperator.py         # CLI 入口（stores/menu/coupons/plan/order/report/tools）
-│   ├── mcd_client.py         # MCP Streamable HTTP 客户端（握手/会话/重试/JSON 提取）
+│   ├── mcoperator.py         # CLI 入口（14 个子命令）
+│   ├── mcd_client.py         # MCP Streamable HTTP 客户端（握手/会话/重试/JSON 提取/缓存降级）
 │   ├── matcher.py            # 餐品名模糊匹配（含数量解析：薯条x2/两份薯条）
 │   ├── optimizer.py          # 券组合优化器（子集枚举/贪心/拆行挂券）
-│   └── report.py             # 省钱报告渲染 + 本地账本与段位
+│   ├── nutrition.py          # 营养成分表解析与购物车热量汇总
+│   ├── wallet.py             # 卡包券/可领券/活动日历的 Markdown 解析
+│   ├── cache.py              # 本地 TTL 缓存（离线降级数据源）
+│   └── report.py             # 报告渲染 + 本地账本与段位
 ├── tests/
-│   └── test_mcoperator.py    # 17 个离线单测（真实响应快照，不访问网络）
+│   ├── test_mcoperator.py    # 17 个离线单测（真实响应快照，不访问网络）
+│   └── test_extras.py        # 26 个离线单测（营养/钱包/缓存/渲染器/CLI）
 ├── examples/                 # 真实演示输出
 ├── MCP_INTEGRATION.md        # MCP 工具/流程/业务价值说明
 ├── mcp-config.example.json   # 脱敏 MCP 配置（仅环境变量占位符）
@@ -173,12 +213,13 @@ mcoperator/
 ## 测试
 
 ```bash
-python tests/test_mcoperator.py
-# Ran 17 tests in 0.002s — OK
+python tests/test_mcoperator.py   # 17 个
+python tests/test_extras.py       # 26 个
 ```
 
 测试全部离线运行，使用录制的真实 MCP 响应快照，覆盖 JSON 提取、
-餐品匹配、券分组、拆行挂券、券商品口径与报告渲染。
+餐品匹配、券分组、拆行挂券、券商品口径、报告渲染、营养表解析、
+卡包/活动日历解析、缓存 TTL 与 CLI 参数解析。
 
 ## 安全与边界
 

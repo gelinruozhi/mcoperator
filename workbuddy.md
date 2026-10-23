@@ -65,12 +65,50 @@
 4. 通过 `gh` CLI 以 gelinruozhi 账号创建公开仓库并推送；
 5. 在大赛官方仓库提交标准格式报名 Issue。
 
+## 第五阶段：深度优化与冲榜加固（约 60 分钟）
+
+报名审核通过后（Issue 官方回复「您的作品已成功参赛」），按参赛者要求做深度优化。
+
+**1. 全量自检**：重读 activityGuidelines 逐条核对——5 个规定文件齐全、
+CONTEST_DECLARATION.md 与官方 MD5 一致（91a7b32e…）、仓库公开、创建时间在窗口内、
+真实使用 MCP（14/35 个工具）、报名 Issue 格式合规。代码层发现 6 处问题：
+coupons 命令直接截断打印原始 Markdown、menu 必须手动指定门店、
+非 plan 命令无 JSON 输出、裸 traceback 无兜底、重试无抖动、无缓存降级。
+
+**2. 功能扩展**（接入此前闲置的 MCP 工具）：
+
+| 新命令 | 接入工具 | 价值 |
+|---|---|---|
+| `compare` | 复用 plan 全链路 ×3 渠道 | 实测发现得来速 ¥35.40 比自取 ¥35.90 更便宜 |
+| `nutrition` + `plan --kcal` | `list-nutrition-foods` | 160 个餐品营养表解析（内嵌 CSV 字符串）、购物车热量汇总、超预算提醒 |
+| `coupons` 重写 | `query-my-coupons` + `available-coupons` | 结构化解析 + 「今日到期」临期预警置顶 |
+| `claim` | `auto-bind-coupons` | 一键领券中心 |
+| `account` | `query-my-account` + `query-lottery-info` | 积分余额/过期预警/抽奖奖品池 |
+| `orders` | `query-order` + `cancel-order` | 订单查询与取消（二次确认） |
+| `campaign` | `campaign-calendar` | 营销活动日历解析（跨行续行的活动条目） |
+
+**3. 可靠性加固**：
+- 重试改为指数退避 + 抖动（上限 8s）；401 与业务错误不重试（McdMcpFatalError）；
+- 新增 `cache.py`：菜单/券/营养表等读操作本地 TTL 缓存，MCP 抖动自动回退，
+  `--offline` 完全离线可用（未命中明确报错，不用脏数据糊弄）；
+- 列表数据统一 `_as_list()` 兼容 `[...]` 与 `{key: [...]}` 两种形态
+  （修复 `delivery-query-addresses` 返回 dict 导致的 KeyError: 0）；
+- 全局参数（`--json`/`--verbose`/`--offline`/`--token`）支持放在子命令前后；
+- 未预期异常统一兜底为中文排障提示。
+
+**4. 测试扩展**：新增 26 个离线单测（营养表解析、卡包/活动日历解析、
+缓存 TTL、新渲染器、CLI 参数解析），合计 **43 个全部通过**。
+
+**5. 文档同步**：README（命令表/三场景演示/43 测试）、MCP_INTEGRATION.md
+（14 工具清单/容错说明）、SKILL.md（命令映射/执行准则/故障速查）全部更新。
+
 ## 使用的 WorkBuddy 能力
 
 - 多文件并行读写、Bash/PowerShell 命令执行（7z 解压、Python 脚本、gh CLI）
 - WebFetch/WebSearch 备用信息通道
 - 任务管理（TaskCreate/TaskUpdate）跟踪五阶段进度
 - 本地文件系统操作与 Git/GitHub 全流程
+- 长会话上下文压缩后的任务续做（第五阶段基于摘要无损衔接）
 
 ---
 

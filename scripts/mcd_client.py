@@ -6,7 +6,9 @@
 - mcp-session-id 会话保持
 - SSE（text/event-stream）与普通 JSON 两种响应体解析
 - 从 MCP 工具返回的 Markdown 文本中提取内嵌的业务 JSON
-- 瞬时失败重试与限流退避
+- 瞬时失败重试与限流退避（指数退避 + 抖动）
+- 本地 TTL 缓存降级：MCP 抖动时自动回退到上次成功的数据
+- 工具响应结构校验（success=false 时给出中文业务错误）
 
 麦当劳 MCP 服务规则见 https://cdn.mcd.cn/cms/pages/MCPServerRules.html
 """
@@ -15,17 +17,25 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import time
 import urllib.error
 import urllib.request
 
+import cache as _cache
+
 DEFAULT_URL = "https://mcp.mcd.cn"
 PROTOCOL_VERSION = "2024-11-05"
 MIN_CALL_INTERVAL = 0.12  # 秒；官方限流 600 次/分钟，保守留出余量
+MAX_BACKOFF = 8.0         # 单次重试最大等待秒数
 
 
 class McdMcpError(RuntimeError):
     """MCP 调用失败（网络、协议、业务错误）。"""
+
+
+class McdMcpFatalError(McdMcpError):
+    """不可重试的错误（如 Token 失效 401）。"""
 
 
 def _try_parse_balanced(text: str, start: int):
@@ -80,7 +90,7 @@ class McdMcpClient:
     """极简 MCP Streamable HTTP 客户端。"""
 
     def __init__(self, token: str | None = None, url: str = DEFAULT_URL,
-                 timeout: int = 30, verbose: bool = False):
+                 timeout: int = 30, verbose: bool = False, offline: bool = False):
         self.token = token or os.environ.get("MCD_MCP_TOKEN", "")
         if not self.token:
             raise McdMcpError(
@@ -90,6 +100,7 @@ class McdMcpClient:
         self.url = url
         self.timeout = timeout
         self.verbose = verbose
+        self.offline = offline
         self._session_id = None
         self._req_id = 0
         self._initialized = False
@@ -122,9 +133,12 @@ class McdMcpClient:
             except Exception:
                 pass
             if e.code == 401:
-                raise McdMcpError("MCP Token 无效或已过期（HTTP 401），请重新申请 Token。")
+                raise McdMcpFatalError(
+                    "MCP Token 无效或已过期（HTTP 401），请重新申请 Token。")
             if e.code == 429:
                 raise McdMcpError("触发 MCP 限流（HTTP 429，600 次/分钟），请稍后重试。")
+            if 500 <= e.code < 600:
+                raise McdMcpError("MCP 服务端错误 HTTP %s：%s" % (e.code, detail))
             raise McdMcpError("MCP 请求失败 HTTP %s：%s" % (e.code, detail))
         except urllib.error.URLError as e:
             raise McdMcpError("MCP 网络错误：%s" % e.reason)
@@ -175,12 +189,21 @@ class McdMcpClient:
             time.sleep(wait)
         self._last_call_ts = time.time()
 
+    def _backoff(self, attempt: int):
+        """指数退避 + 抖动，避免重试风暴。"""
+        base = min(MAX_BACKOFF, 1.5 * (attempt + 1))
+        time.sleep(base + random.uniform(0, 0.5))
+
     def call_tool(self, name: str, arguments: dict | None = None,
                   retries: int = 2) -> dict:
         """调用工具并返回解析后的业务 JSON（data 层由调用方按需取）。
 
-        失败重试针对「空响应 / 无内嵌 JSON」这类瞬时情况。
+        失败重试针对「空响应 / 无内嵌 JSON / 5xx」这类瞬时情况。
+        离线模式下直接拒绝（离线请用 call_tool_cached 读缓存）。
         """
+        if self.offline:
+            raise McdMcpError(
+                "离线模式（--offline）下不能调用 %s；该操作需要实时数据。" % name)
         self.initialize()
         last_err = None
         for attempt in range(retries + 1):
@@ -190,10 +213,12 @@ class McdMcpClient:
                 result = self._rpc("tools/call", {
                     "name": name, "arguments": arguments or {},
                 })
+            except McdMcpFatalError:
+                raise  # Token 失效等不可重试错误，直接抛出
             except McdMcpError as e:
                 last_err = e
                 if attempt < retries:
-                    time.sleep(1.5 * (attempt + 1))
+                    self._backoff(attempt)
                     continue
                 raise
             content = result.get("content", [])
@@ -201,14 +226,56 @@ class McdMcpClient:
             text = "\n".join(texts)
             data = extract_embedded_json(text)
             if data is not None:
+                self._check_business(name, data)
                 return data
             # 极少数工具直接返回纯文本（无内嵌 JSON），原样带回
             if text.strip():
                 return {"_raw_text": text}
             last_err = McdMcpError("工具 %s 返回为空（第 %d 次尝试）" % (name, attempt + 1))
             if attempt < retries:
-                time.sleep(1.5 * (attempt + 1))
+                self._backoff(attempt)
         raise last_err
+
+    @staticmethod
+    def _check_business(name: str, data: dict):
+        """业务级错误：success=false 时抛出中文错误（不可重试）。"""
+        if data.get("success") is False:
+            msg = data.get("message") or data.get("msg") or "未知错误"
+            raise McdMcpFatalError("麦当劳 MCP 业务错误（%s）：%s" % (name, msg))
+
+    def call_tool_cached(self, name: str, arguments: dict | None = None,
+                         ttl: int | None = None, offline: bool = False,
+                         verbose: bool = False) -> dict:
+        """带缓存降级的工具调用。
+
+        1. offline（参数或客户端级）：只读缓存，不打网络；
+        2. 正常调用；失败（网络/协议类错误）时回退到缓存数据；
+        3. 成功后刷新缓存。
+        """
+        arguments = arguments or {}
+        offline = offline or self.offline
+        if offline:
+            data = _cache.get(name, arguments, ttl)
+            if data is None:
+                raise McdMcpError(
+                    "离线模式（--offline）下没有 %s 的可用缓存。"
+                    "先联网跑一次同名命令即可生成缓存。" % name)
+            if verbose or self.verbose:
+                print("[cache] 离线读取 %s" % name)
+            return data
+        try:
+            data = self.call_tool(name, arguments)
+            _cache.put(name, arguments, data)
+            return data
+        except McdMcpFatalError:
+            raise  # 业务错误（如 Token 失效、门店未营业）不回退缓存，避免掩盖真实状态
+        except McdMcpError:
+            stale = _cache.get(name, arguments, ttl)
+            if stale is not None:
+                if verbose or self.verbose:
+                    print("[cache] %s 调用失败，回退到缓存数据" % name)
+                return stale
+            raise
 
     def list_tools(self) -> list:
         self.initialize()
